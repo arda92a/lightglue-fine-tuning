@@ -1,0 +1,75 @@
+# Product Matching with LightGlue - Fine-tune Config
+# Fine-tunes from pretrained DISK LightGlue weights (128-dim)
+# Full pretrained weights loaded - DISK uses 128-dim input
+
+data:
+    name: product_pairs
+    data_dir: lightglue_dataset_final
+    image_dir: images/
+    annotation_dir: annotations/
+    matches_file: matches.json
+    
+    # Split ratios (must sum to 1.0)
+    train_ratio: 0.7
+    val_ratio: 0.2
+    test_ratio: 0.1
+    
+    # Image settings
+    grayscale: false
+    resize: [640, 480]
+    
+    # Product settings
+    embedding_dim: 128              # DISK uses 128-dim (perfect match!)
+    max_products: 400
+    pad_products: true
+    batch_size: 8
+
+model:
+    name: two_view_pipeline
+    
+    extractor:
+        name: null
+    
+    # Ground truth provided directly by dataset (gt_matches0, gt_matches1)
+    # No need for homography-based ground truth generation
+    ground_truth:
+        name: null
+    
+    matcher:
+        name: matchers.lightglue
+        input_dim: 128              # DISK uses 128-dim (perfect match!)
+        descriptor_dim: 256         # Internal LightGlue dimension
+        n_layers: 9                 # Must match pretrained (default)
+        num_heads: 4                # Must match pretrained
+        flash: false
+        checkpointed: true
+        filter_threshold: 0.1
+        
+        # Load ALL pretrained weights (128-dim = DISK match!)
+        # All layers including input_proj will be loaded from pretrained
+        weights: disk
+        weights_from_version: v0.1_arxiv
+        
+        loss:
+            gamma: 1.0
+            fn: nll
+            nll_balancing: 0.5
+
+train:
+    seed: 42
+    epochs: 30                      
+    batch_size: 8
+    num_workers: 4
+    
+    log_every_iter: 50
+    eval_every_iter: 50
+    
+    optimizer: adam
+    lr: 5e-5                        
+    lr_schedule:
+        start: 15
+        type: exp
+        on_epoch: true
+        exp_div_10: 10
+
+    plot: null
