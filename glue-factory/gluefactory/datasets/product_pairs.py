@@ -203,6 +203,17 @@ class _ProductDataset(torch.utils.data.Dataset):
             products = []
             logger.warning(f"Annotation not found: {annotation_path}")
         
+        # Get original image size (bbox coordinates are in original image space)
+        image_path = self.image_dir / f"{name}.jpg"
+        if not image_path.exists():
+            image_path = self.image_dir / f"{name}.png"
+        
+        if image_path.exists():
+            from PIL import Image
+            with Image.open(image_path) as img:
+                original_size = [img.width, img.height]
+
+        
         # Extract keypoints (bbox centers) and embeddings
         keypoints = []
         embeddings = []
@@ -231,7 +242,7 @@ class _ProductDataset(torch.utils.data.Dataset):
         keypoint_scores[:n_products] = 1.0
         
         view = {
-            "image_size": torch.tensor(self.conf.resize if self.conf.resize else [640, 480], dtype=torch.float32),
+            "image_size": torch.tensor(original_size, dtype=torch.float32),  # Use original size for correct normalization
             "keypoints": keypoints,
             "descriptors": embeddings,
             "keypoint_scores": keypoint_scores,

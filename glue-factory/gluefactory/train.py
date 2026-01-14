@@ -697,9 +697,9 @@ def training(rank, conf, output_dir, args):
 
     logger.info(f"Finished training on process {rank}.")
     
-    # Run final test evaluation on BEST model
+    # Run final test evaluation on BEST model (WITHOUT padding for realistic metrics)
     if rank == 0 and test_loader is not None:
-        logger.info("Running final test evaluation on BEST model...")
+        logger.info("Running final test evaluation on BEST model (no padding)...")
         
         # Load best checkpoint
         best_cp_path = output_dir / "checkpoint_best.tar"
@@ -712,43 +712,115 @@ def training(rank, conf, output_dir, args):
             logger.info(f"Loaded best checkpoint from epoch {best_cp.get('epoch', 'unknown')}")
         
         model.eval()
-        with fork_rng(seed=conf.train.seed):
-            test_results, test_pr_metrics, _ = do_evaluation(
-                model,
-                test_loader,
-                device,
-                loss_fn,
-                conf.train,
-                rank,
-                pbar=True,
-            )
         
-        # Calculate F1 score
-        precision = test_results.get("match_precision", 0)
-        recall = test_results.get("match_recall", 0)
+        # Evaluate WITHOUT padding (more realistic)
+        import json
+        from PIL import Image
+        
+        data_dir = settings.DATA_PATH / conf.data.data_dir
+        test_pairs = dataset.pairs["test"]
+        
+        pair_precisions = []
+        pair_recalls = []
+        total_tp, total_fp, total_fn = 0, 0, 0
+        
+        with torch.no_grad():
+            for pair_info in tqdm(test_pairs, desc="Test (no padding)"):
+                name0, name1 = pair_info["image0"], pair_info["image1"]
+                gt_matches = set(tuple(m) for m in pair_info["matches"])
+                
+                # Load annotations directly (no padding)
+                ann0_path = data_dir / conf.data.annotation_dir / f"{name0}.json"
+                ann1_path = data_dir / conf.data.annotation_dir / f"{name1}.json"
+                
+                with open(ann0_path) as f:
+                    ann0 = json.load(f)
+                with open(ann1_path) as f:
+                    ann1 = json.load(f)
+                
+                # Get original image sizes
+                img0_path = data_dir / conf.data.image_dir / f"{name0}.jpg"
+                img1_path = data_dir / conf.data.image_dir / f"{name1}.jpg"
+                if not img0_path.exists():
+                    img0_path = img0_path.with_suffix('.png')
+                if not img1_path.exists():
+                    img1_path = img1_path.with_suffix('.png')
+                
+                with Image.open(img0_path) as img:
+                    size0 = [img.width, img.height]
+                with Image.open(img1_path) as img:
+                    size1 = [img.width, img.height]
+                
+                # Build keypoints and descriptors (NO PADDING)
+                products0 = ann0.get("products", [])
+                products1 = ann1.get("products", [])
+                
+                kpts0 = torch.tensor([[(p["bbox"][0]+p["bbox"][2])/2, (p["bbox"][1]+p["bbox"][3])/2] for p in products0], dtype=torch.float32)
+                kpts1 = torch.tensor([[(p["bbox"][0]+p["bbox"][2])/2, (p["bbox"][1]+p["bbox"][3])/2] for p in products1], dtype=torch.float32)
+                desc0 = torch.tensor([p["embedding"] for p in products0], dtype=torch.float32)
+                desc1 = torch.tensor([p["embedding"] for p in products1], dtype=torch.float32)
+                
+                if len(kpts0) == 0 or len(kpts1) == 0:
+                    continue
+                
+                batch = {
+                    "keypoints0": kpts0.unsqueeze(0).to(device),
+                    "keypoints1": kpts1.unsqueeze(0).to(device),
+                    "descriptors0": desc0.unsqueeze(0).to(device),
+                    "descriptors1": desc1.unsqueeze(0).to(device),
+                    "view0": {"image_size": torch.tensor([size0]).to(device)},
+                    "view1": {"image_size": torch.tensor([size1]).to(device)},
+                }
+                
+                pred = model(batch)
+                matches0 = pred["matches0"][0].cpu().numpy()
+                
+                # Get predicted matches
+                pred_matches = set((i, int(matches0[i])) for i in range(len(matches0)) if matches0[i] != -1)
+                
+                # Calculate TP, FP, FN
+                tp = len(pred_matches & gt_matches)
+                fp = len(pred_matches - gt_matches)
+                fn = len(gt_matches - pred_matches)
+                
+                total_tp += tp
+                total_fp += fp
+                total_fn += fn
+                
+                if tp + fp > 0:
+                    pair_precisions.append(tp / (tp + fp))
+                if tp + fn > 0:
+                    pair_recalls.append(tp / (tp + fn))
+        
+        # Calculate final metrics
+        precision = np.mean(pair_precisions) if pair_precisions else 0
+        recall = np.mean(pair_recalls) if pair_recalls else 0
         f1_score = 2 * (precision * recall) / (precision + recall + 1e-8)
-        test_results["f1_score"] = f1_score
+        
+        test_results = {
+            "match_precision": precision,
+            "match_recall": recall,
+            "f1_score": f1_score,
+            "total_tp": total_tp,
+            "total_fp": total_fp,
+            "total_fn": total_fn,
+        }
         
         # Log results
-        str_test_results = [
-            f"{k} {v:.3E}"
-            for k, v in test_results.items()
-            if isinstance(v, float)
-        ]
-        logger.info(f'[Test] {{{", ".join(str_test_results)}}}')
+        logger.info(f'[Test] precision={precision:.4f}, recall={recall:.4f}, f1={f1_score:.4f}')
+        logger.info(f'[Test] TP={total_tp}, FP={total_fp}, FN={total_fn}')
         
         # Log to W&B
         wandb.log({
-            **{f"test/{k}": v for k, v in test_results.items() if isinstance(v, (int, float))},
+            "test/match_precision": precision,
+            "test/match_recall": recall,
             "test/f1_score": f1_score,
         })
         
         # Also log as summary metrics
-        wandb.run.summary["test/precision"] = precision
-        wandb.run.summary["test/recall"] = recall
+        wandb.run.summary["test/match_precision"] = precision
+        wandb.run.summary["test/match_recall"] = recall
         wandb.run.summary["test/f1_score"] = f1_score
-        wandb.run.summary["test/accuracy"] = test_results.get("accuracy", 0)
-        wandb.run.summary["test/loss"] = test_results.get("loss/total", 0)
         
         # Upload models to W&B as artifacts
         logger.info("Uploading model artifacts to W&B...")
