@@ -1,0 +1,68 @@
+# Product Matching with LightGlue - Focal Loss Config
+# Uses focal loss (gamma_f) to focus on hard negatives
+
+data:
+    name: product_pairs
+    data_dir: lightglue_dataset_final
+    image_dir: images/
+    annotation_dir: annotations/
+    matches_file: matches.json
+    
+    train_ratio: 0.7
+    val_ratio: 0.2
+    test_ratio: 0.1
+    
+    grayscale: false
+    resize: [640, 480]
+    
+    embedding_dim: 128
+    max_products: 400
+    pad_products: true
+    batch_size: 8
+
+model:
+    name: two_view_pipeline
+    
+    extractor:
+        name: null
+    
+    ground_truth:
+        name: null
+    
+    matcher:
+        name: matchers.lightglue
+        input_dim: 128
+        descriptor_dim: 256
+        n_layers: 9
+        num_heads: 4
+        flash: false
+        checkpointed: true
+        filter_threshold: 0.25
+        
+        weights: disk
+        weights_from_version: v0.1_arxiv
+        
+        loss:
+            gamma: 1.0
+            fn: nll
+            nll_balancing: 0.5
+            gamma_f: 2.0             # Focal Loss - hard negatives'e odaklan
+
+train:
+    seed: 42
+    epochs: 30
+    batch_size: 8
+    num_workers: 4
+    
+    log_every_iter: 50
+    eval_every_iter: 50
+    
+    optimizer: adam
+    lr: 5e-5
+    lr_schedule:
+        start: 15
+        type: exp
+        on_epoch: true
+        exp_div_10: 10
+
+    plot: null

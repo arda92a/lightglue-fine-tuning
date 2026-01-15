@@ -43,7 +43,7 @@ model:
         num_heads: 4                # Must match pretrained
         flash: false
         checkpointed: true
-        filter_threshold: 0.1
+        filter_threshold: 0.35
         
         # Load ALL pretrained weights (128-dim = DISK match!)
         # All layers including input_proj will be loaded from pretrained

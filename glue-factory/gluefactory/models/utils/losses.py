@@ -8,7 +8,15 @@ def weight_loss(log_assignment, weights, gamma=0.0):
     m -= 1
     n -= 1
 
-    loss_sc = log_assignment * weights
+    # Focal loss: (1 - p)^gamma * log(p)
+    # log_assignment is already log(p), so we need to get p = exp(log_assignment)
+    if gamma > 0:
+        # p = exp(log_p), focal_weight = (1 - p)^gamma
+        probs = log_assignment.exp().clamp(min=1e-6, max=1.0)
+        focal_weight = (1 - probs) ** gamma
+        loss_sc = log_assignment * weights * focal_weight
+    else:
+        loss_sc = log_assignment * weights
 
     num_neg0 = weights[:, :m, -1].sum(-1).clamp(min=1.0)
     num_neg1 = weights[:, -1, :n].sum(-1).clamp(min=1.0)
